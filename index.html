@@ -1,0 +1,726 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VAR Points Estimator</title>
+    <style>
+      html, body, #root { height: 100%; margin: 0; background: #0b0c11; }
+    </style>
+    <!-- React + ReactDOM + Babel (in-browser JSX), all from CDN. No build step. -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+      const { useState, useMemo, useRef, useEffect } = React;
+
+      // ---- Constants (sources in disclaimer; defaults tuned to live community expectations) ----
+      // Lighter realized anchor: ~$40–65 per point at launch (25% community, ~12.4M points)
+      const LIGHTER_LOW = 40;
+      const LIGHTER_HIGH = 65;
+      // VAR: official docs say ~50% to community "over time via various initiatives" — the current
+      // Omni points season is only ONE of those, so we discount by an adjustable points-share factor.
+      const VAR_COMMUNITY = 0.5;          // 50% to community (official)
+      const POINTS_SHARE_DEFAULT = 0.5;   // est. share of that 50% flowing to the current points season
+      const VAR_TOTAL_POINTS_EST = 9_500_000; // season ends Q3 2026; ~9–10M total expected
+
+      // FDV tiers re-anchored to live market expectations:
+      //  • $50M Series A led by Dragonfly (Bain, Coinbase Ventures); ~$60M total raised
+      //  • Polymarket: median launch FDV ~$500M, bull $1B+, bear <$200M
+      const FDV_TIERS = [
+        { label: "$250M", value: 250_000_000, tag: "Bear" },
+        { label: "$500M", value: 500_000_000, tag: "Low" },
+        { label: "$1B", value: 1_000_000_000, tag: "Base" },
+        { label: "$1.5B", value: 1_500_000_000, tag: "Bull" },
+        { label: "$3B", value: 3_000_000_000, tag: "Moon" },
+      ];
+
+      // One-click presets: each sets FDV tier, total points, and points-share together.
+      const PRESETS = {
+        pessimistic: { fdvIdx: 1, totalPoints: 9_500_000, pointsShare: 0.45 },
+        neutral:     { fdvIdx: 2, totalPoints: 9_500_000, pointsShare: 0.50 },
+        optimistic:  { fdvIdx: 3, totalPoints: 9_000_000, pointsShare: 0.65 },
+      };
+      const PRESET_KEYS = ["pessimistic", "neutral", "optimistic"];
+
+      // ---- Your links ----
+      const REF_URL = "https://omni.variational.io/?ref=OMNI88888";
+      const TW_URL = "https://x.com/x_188888_x";
+      const TW_HANDLE = "@x_188888_x";
+      // Public, CORS-open (access-control-allow-origin: *), no auth. Fetched live on each load.
+      const STATS_URL = "https://omni-client-api.prod.ap-northeast-1.variational.io/metadata/stats";
+
+      // ---- i18n ----
+      const T = {
+        en: {
+          tag: "v1.6 · unofficial",
+          h1a: "What could your ", h1accent: "VAR points", h1b: " be worth?",
+          sub: "No token or conversion formula exists yet. This is a directional estimate, anchored to what Lighter actually paid out — not a prediction. Defaults reflect current community expectations (Polymarket, funding, docs).",
+          presetLabel: "QUICK PRESET",
+          presets: { pessimistic: "Pessimistic", neutral: "Neutral", optimistic: "Optimistic" },
+          pointsLabel: "YOUR OMNI POINTS",
+          placeholder: "e.g. 1200",
+          fdvLabel: "ASSUMED LAUNCH FDV",
+          tags: { Bear: "Bear", Low: "Low", Base: "Base", Bull: "Bull", Moon: "Moon" },
+          totalLabel: "ASSUMED TOTAL POINTS AT TGE",
+          totalHints: ["5M (generous)", "~9.5M expected", "15M (diluted)"],
+          shareLabel: "POINTS’ SHARE OF COMMUNITY 50%",
+          shareHints: ["20% (many seasons)", "50% (base)", "100% (all to points)"],
+          shareNote: "Official docs: 50% to community “over time via various initiatives.” The current points season is only one — set how much of that 50% you think it captures. (The popular “$50–70/pt” figures quietly assume 100%.)",
+          kicker: "ESTIMATED RANGE",
+          toPts: "to pts",
+          perPoint: (x, p) => "≈ " + x + " per point  ·  " + p + " points",
+          varEst: "VAR (est.)",
+          lighterReal: "Lighter (real)",
+          empty: "Enter your points above to see an estimate ↑",
+          cardFoot: "Estimate only · no official formula · not financial advice",
+          noteLead: "Why the range is so wide:",
+          noteBody: " VAR’s community slice (50%) is bigger than Lighter’s 25% and fewer people are farming — both push value up. But only part of that 50% flows to the current points season (future seasons, ecosystem and treasury take the rest), which pushes it back down. The share slider is the single biggest swing factor.",
+          cta: "Window closes by Q3 2026. Screenshot your range & share 👇",
+          refCta: "Farm VAR on Variational →",
+          refPerks: "My code OMNI88888 — +16% point boost & 90-day Silver",
+          builtBy: "Built by",
+          liveLabel: "LIVE · VARIATIONAL",
+          lv24h: "24h Vol", lvOI: "Open Int.", lvTVL: "TVL", lvMkts: "Markets",
+          liveErr: "Live stats unavailable (offline)",
+          liveSrc: "Source: Variational public API · refreshes each load",
+          liveCaveat: "Platform scale, not your airdrop — context only.",
+          disc: "Defaults reflect live expectations: Polymarket median launch FDV ~$500M (bull $1B+, bear <$200M); $50M Series A led by Dragonfly; ~9–10M points by season end (Q3 2026). Share of the 50% community bucket going to current points is unknown — docs only say “over time via various initiatives.” FDV, total points & share are yours to set; real values are unknown until TGE. Most airdrops fall after launch. Nothing here is financial advice. DYOR.",
+        },
+        zh: {
+          tag: "v1.6 · 非官方",
+          h1a: "你的 ", h1accent: "VAR 积分", h1b: " 能值多少钱？",
+          sub: "目前尚无代币和换算公式。这只是一个方向性估算，锚定 Lighter 实际发放的金额——并非预测。默认值参考了当前社区预期（Polymarket、融资、官方文档）。",
+          presetLabel: "一键预设",
+          presets: { pessimistic: "悲观", neutral: "中性", optimistic: "乐观" },
+          pointsLabel: "你的 OMNI 积分",
+          placeholder: "例如 1200",
+          fdvLabel: "假设发行 FDV",
+          tags: { Bear: "熊", Low: "偏低", Base: "基准", Bull: "牛", Moon: "月球" },
+          totalLabel: "TGE 预计总积分",
+          totalHints: ["5M（慷慨）", "~9.5M（预期）", "15M（稀释）"],
+          shareLabel: "积分占社区 50% 的份额",
+          shareHints: ["20%（多季）", "50%（基准）", "100%（全给积分）"],
+          shareNote: "官方文档：50% 分给社区，“逐步通过各种举措发放”。当前积分季只是其中之一——自行设定你认为它占这 50% 的多少。（网上流行的 “$50–70/点” 默认按 100% 计算。）",
+          kicker: "估算区间",
+          toPts: "给积分",
+          perPoint: (x, p) => "≈ 每点 " + x + "  ·  共 " + p + " 点",
+          varEst: "VAR（估）",
+          lighterReal: "Lighter（真实）",
+          empty: "在上方输入积分查看估算 ↑",
+          cardFoot: "仅为估算 · 无官方公式 · 非投资建议",
+          noteLead: "为什么区间这么宽：",
+          noteBody: " VAR 的社区份额（50%）大于 Lighter 的 25%，且farming人数更少——两者都推高价值。但这 50% 里只有一部分发给当前积分季（其余给后续季、生态、金库），又把它拉低。份额滑块是影响最大的单一变量。",
+          cta: "窗口将在 2026 Q3 关闭。截图你的区间并分享 👇",
+          refCta: "去 Variational farm VAR →",
+          refPerks: "我的邀请码 OMNI88888 — +16% 积分加成 & 90 天银牌",
+          builtBy: "作者",
+          liveLabel: "实时 · VARIATIONAL",
+          lv24h: "24h成交", lvOI: "持仓量", lvTVL: "TVL", lvMkts: "市场数",
+          liveErr: "实时数据不可用（离线）",
+          liveSrc: "来源：Variational 公开 API · 每次打开刷新",
+          liveCaveat: "平台规模，不等于你的空投——仅作参考。",
+          disc: "默认值参考实时预期：Polymarket 发行 FDV 中位数 ~$500M（牛 $1B+，熊 <$200M）；$50M Series A 由 Dragonfly 领投；季末（2026 Q3）约 9–10M 积分。当前积分占社区 50% 的比例未知——文档仅称“逐步通过各种举措发放”。FDV、总积分、份额均由你设定；真实数值在 TGE 前未知。多数空投在上线后下跌。本页不构成投资建议。DYOR。",
+        },
+      };
+
+      function VarEstimator() {
+        const [lang, setLang] = useState("en");
+        const [points, setPoints] = useState("");
+        const [fdvIdx, setFdvIdx] = useState(2); // default $1B (community base case; PM median is $500M)
+        const [totalPoints, setTotalPoints] = useState(VAR_TOTAL_POINTS_EST);
+        const [pointsShare, setPointsShare] = useState(POINTS_SHARE_DEFAULT);
+        const cardRef = useRef(null);
+        const [stats, setStats] = useState(null);
+        const [statsErr, setStatsErr] = useState(false);
+
+        useEffect(() => {
+          let alive = true;
+          fetch(STATS_URL)
+            .then((r) => r.json())
+            .then((d) => { if (alive) setStats(d); })
+            .catch(() => { if (alive) setStatsErr(true); });
+          return () => { alive = false; };
+        }, []);
+
+        const big = (n) => {
+          n = Number(n);
+          if (!isFinite(n)) return "—";
+          if (n >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
+          if (n >= 1e6) return "$" + (n / 1e6).toFixed(0) + "M";
+          if (n >= 1e3) return "$" + (n / 1e3).toFixed(0) + "K";
+          return "$" + n.toFixed(0);
+        };
+
+        const t = T[lang];
+        const fdv = FDV_TIERS[fdvIdx];
+        const p = Math.max(0, parseFloat(points) || 0);
+        const pct = Math.round(pointsShare * 100);
+
+        const calc = useMemo(() => {
+          // only the slice of the 50% community bucket that flows to the current points season
+          const perPoint = (fdv.value * VAR_COMMUNITY * pointsShare) / totalPoints;
+          const myValue = perPoint * p;
+          const low = myValue * 0.65;
+          const high = myValue * 1.35;
+          return { perPoint, myValue, low, high };
+        }, [p, fdv, totalPoints, pointsShare]);
+
+        const fmt = (n) =>
+          n >= 1000
+            ? "$" + Math.round(n).toLocaleString()
+            : "$" + n.toFixed(n < 10 ? 2 : 1);
+
+        function barW(v) {
+          const max = Math.max(calc.perPoint, (LIGHTER_LOW + LIGHTER_HIGH) / 2);
+          return Math.min(100, (v / max) * 100) + "%";
+        }
+
+        function ppFor(preset) {
+          return (FDV_TIERS[preset.fdvIdx].value * VAR_COMMUNITY * preset.pointsShare) / preset.totalPoints;
+        }
+
+        function applyPreset(k) {
+          const x = PRESETS[k];
+          setFdvIdx(x.fdvIdx);
+          setTotalPoints(x.totalPoints);
+          setPointsShare(x.pointsShare);
+        }
+
+        const activePreset = PRESET_KEYS.find((k) => {
+          const x = PRESETS[k];
+          return x.fdvIdx === fdvIdx && x.totalPoints === totalPoints && Math.abs(x.pointsShare - pointsShare) < 1e-6;
+        }) || null;
+
+        return (
+          <div style={styles.wrap}>
+            <style>{css}</style>
+
+            <div style={styles.shell}>
+              {/* Header */}
+              <div style={styles.head}>
+                <div style={styles.dotrow}>
+                  <span style={{ ...styles.dot, background: "#ff5f57" }} />
+                  <span style={{ ...styles.dot, background: "#febc2e" }} />
+                  <span style={{ ...styles.dot, background: "#28c840" }} />
+                </div>
+                <div style={styles.headTitle}>VAR_POINTS_ESTIMATOR</div>
+                <div style={styles.langToggle}>
+                  <span
+                    onClick={() => setLang("en")}
+                    style={{ ...styles.langOpt, ...(lang === "en" ? styles.langActive : {}) }}
+                  >EN</span>
+                  <span
+                    onClick={() => setLang("zh")}
+                    style={{ ...styles.langOpt, ...(lang === "zh" ? styles.langActive : {}) }}
+                  >中</span>
+                </div>
+                <div style={styles.headTag}>{t.tag}</div>
+              </div>
+
+              <div style={styles.body}>
+                <h1 style={styles.h1}>
+                  {t.h1a}<span style={styles.accent}>{t.h1accent}</span>{t.h1b}
+                </h1>
+                <p style={styles.sub}>{t.sub}</p>
+
+                {/* Input */}
+                <label style={styles.label}>{t.pointsLabel}</label>
+                <input
+                  style={styles.input}
+                  type="number"
+                  inputMode="decimal"
+                  placeholder={t.placeholder}
+                  value={points}
+                  onChange={(e) => setPoints(e.target.value)}
+                />
+
+                {/* Quick presets */}
+                <label style={styles.label}>{t.presetLabel}</label>
+                <div style={styles.presetRow}>
+                  {PRESET_KEYS.map((k) => (
+                    <button
+                      key={k}
+                      onClick={() => applyPreset(k)}
+                      style={{ ...styles.preset, ...(activePreset === k ? styles.presetActive : {}) }}
+                    >
+                      <span style={styles.presetName}>{t.presets[k]}</span>
+                      <span style={styles.presetSub}>≈ {fmt(ppFor(PRESETS[k]))}/pt</span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* FDV selector */}
+                <label style={styles.label}>{t.fdvLabel}</label>
+                <div style={styles.tierRow}>
+                  {FDV_TIERS.map((tier, i) => (
+                    <button
+                      key={tier.label}
+                      onClick={() => setFdvIdx(i)}
+                      style={{ ...styles.tier, ...(i === fdvIdx ? styles.tierActive : {}) }}
+                    >
+                      <span style={styles.tierLabel}>{tier.label}</span>
+                      <span style={styles.tierTag}>{t.tags[tier.tag]}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Total points assumption */}
+                <label style={styles.label}>
+                  {t.totalLabel} · {(totalPoints / 1e6).toFixed(1)}M
+                </label>
+                <input
+                  style={styles.range}
+                  type="range"
+                  min={5_000_000}
+                  max={15_000_000}
+                  step={250_000}
+                  value={totalPoints}
+                  onChange={(e) => setTotalPoints(parseInt(e.target.value))}
+                />
+                <div style={styles.rangeHint}>
+                  {t.totalHints.map((h, i) => <span key={i}>{h}</span>)}
+                </div>
+
+                {/* Points' share of the community allocation — the biggest swing factor */}
+                <label style={styles.label}>
+                  {t.shareLabel} · {pct}%
+                </label>
+                <input
+                  style={styles.range}
+                  type="range"
+                  min={0.2}
+                  max={1}
+                  step={0.05}
+                  value={pointsShare}
+                  onChange={(e) => setPointsShare(parseFloat(e.target.value))}
+                />
+                <div style={styles.rangeHint}>
+                  {t.shareHints.map((h, i) => <span key={i}>{h}</span>)}
+                </div>
+                <div style={styles.shareNote}>{t.shareNote}</div>
+
+                {/* Result card */}
+                <div ref={cardRef} style={styles.card}>
+                  <div style={styles.cardGlow} />
+                  <div style={styles.cardTop}>
+                    <span style={styles.cardKicker}>{t.kicker}</span>
+                    <span style={styles.cardFdv}>@ {fdv.label} · {pct}% {t.toPts}</span>
+                  </div>
+
+                  {p > 0 ? (
+                    <>
+                      <div style={styles.bigNum}>
+                        {fmt(calc.low)} <span style={styles.dash}>–</span> {fmt(calc.high)}
+                      </div>
+                      <div style={styles.perPoint}>
+                        {t.perPoint(fmt(calc.perPoint), p.toLocaleString())}
+                      </div>
+
+                      {/* Lighter anchor comparison bar */}
+                      <div style={styles.anchorBox}>
+                        <div style={styles.anchorRow}>
+                          <span style={styles.anchorLabelV}>{t.varEst}</span>
+                          <div style={styles.barTrack}>
+                            <div
+                              style={{
+                                ...styles.barFill,
+                                width: barW(calc.perPoint),
+                                background: "linear-gradient(90deg,#7c77dd,#a99ff0)",
+                              }}
+                            />
+                          </div>
+                          <span style={styles.barVal}>{fmt(calc.perPoint)}</span>
+                        </div>
+                        <div style={styles.anchorRow}>
+                          <span style={styles.anchorLabelL}>{t.lighterReal}</span>
+                          <div style={styles.barTrack}>
+                            <div
+                              style={{
+                                ...styles.barFill,
+                                width: barW((LIGHTER_LOW + LIGHTER_HIGH) / 2),
+                                background: "#5f6066",
+                              }}
+                            />
+                          </div>
+                          <span style={styles.barVal}>${LIGHTER_LOW}–{LIGHTER_HIGH}</span>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div style={styles.empty}>{t.empty}</div>
+                  )}
+
+                  <div style={styles.cardFoot}>{t.cardFoot}</div>
+                </div>
+
+                {/* Balanced reality note */}
+                <div style={styles.note}>
+                  <strong style={{ color: "#a99ff0" }}>{t.noteLead}</strong>{t.noteBody}
+                </div>
+
+                {/* CTA */}
+                <div style={styles.cta}>
+                  <span style={styles.ctaText}>{t.cta}</span>
+                </div>
+
+                {/* Live platform stats — context for the referral, NOT an input to the estimate */}
+                <div style={styles.liveWrap}>
+                  <div style={styles.liveHead}>
+                    <span style={styles.liveDot} />{t.liveLabel}
+                  </div>
+                  {statsErr ? (
+                    <div style={styles.liveErr}>{t.liveErr}</div>
+                  ) : (
+                    <div style={styles.liveRow}>
+                      {[
+                        { k: t.lv24h, v: stats ? big(stats.total_volume_24h) : "…" },
+                        { k: t.lvOI, v: stats ? big(stats.open_interest) : "…" },
+                        { k: t.lvTVL, v: stats ? big(stats.tvl) : "…" },
+                        { k: t.lvMkts, v: stats ? String(stats.num_markets) : "…" },
+                      ].map((c, i) => (
+                        <div key={i} style={styles.liveCell}>
+                          <span style={styles.liveVal}>{c.v}</span>
+                          <span style={styles.liveKey}>{c.k}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={styles.liveCaveat}>{t.liveCaveat}</div>
+                  <div style={styles.liveSrc}>{t.liveSrc}</div>
+                </div>
+
+                {/* Referral */}
+                <a className="refbtn" href={REF_URL} target="_blank" rel="noopener noreferrer" style={styles.refBtn}>
+                  <span style={styles.refBtnText}>{t.refCta}</span>
+                  <span style={styles.refBtnSub}>{t.refPerks}</span>
+                </a>
+
+                <div style={styles.disc}>{t.disc}</div>
+
+                <div style={styles.builtBy}>
+                  {t.builtBy}{" "}
+                  <a href={TW_URL} target="_blank" rel="noopener noreferrer" style={styles.twLink}>{TW_HANDLE}</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      const css = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Sora:wght@400;600;800&display=swap');
+* { box-sizing: border-box; }
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; }
+input[type=range] { -webkit-appearance: none; appearance: none; background: transparent; }
+input[type=range]::-webkit-slider-runnable-track { height: 4px; background: #2a2c36; border-radius: 4px; }
+input[type=range]::-moz-range-track { height: 4px; background: #2a2c36; border-radius: 4px; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; margin-top: -8px; width: 20px; height: 20px; border-radius: 50%; background: #7c77dd; border: 3px solid #0f1016; cursor: pointer; box-shadow: 0 0 12px rgba(124,119,221,.6); }
+input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: #7c77dd; border: 3px solid #0f1016; cursor: pointer; }
+@keyframes glowpulse { 0%,100% { opacity:.5 } 50% { opacity:.9 } }
+@keyframes livepulse { 0%,100% { opacity:1 } 50% { opacity:.25 } }
+.refbtn { transition: transform .15s, filter .15s; }
+.refbtn:hover { transform: translateY(-1px); filter: brightness(1.07); }
+`;
+
+      const styles = {
+        wrap: {
+          fontFamily: "'Sora', sans-serif",
+          background: "radial-gradient(circle at 30% 0%, #1a1b26 0%, #0b0c11 60%)",
+          minHeight: "100%",
+          padding: "24px 14px",
+          display: "flex",
+          justifyContent: "center",
+        },
+        shell: {
+          width: "100%",
+          maxWidth: 560,
+          background: "#0f1016",
+          border: "1px solid #23252f",
+          borderRadius: 16,
+          overflow: "hidden",
+          boxShadow: "0 30px 80px rgba(0,0,0,.6)",
+        },
+        head: {
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "12px 16px",
+          background: "#15161d",
+          borderBottom: "1px solid #23252f",
+        },
+        dotrow: { display: "flex", gap: 6 },
+        dot: { width: 11, height: 11, borderRadius: "50%", display: "inline-block" },
+        headTitle: {
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 12,
+          letterSpacing: 1,
+          color: "#8a8d99",
+          marginLeft: 4,
+        },
+        langToggle: {
+          marginLeft: "auto",
+          display: "flex",
+          gap: 2,
+          background: "#0f1016",
+          border: "1px solid #2a2c36",
+          borderRadius: 7,
+          padding: 2,
+        },
+        langOpt: {
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 11,
+          padding: "2px 8px",
+          borderRadius: 5,
+          color: "#6a6d79",
+          cursor: "pointer",
+          userSelect: "none",
+        },
+        langActive: { background: "#211f3a", color: "#a99ff0" },
+        headTag: {
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 11,
+          color: "#4d505c",
+        },
+        body: { padding: "26px 24px 22px" },
+        h1: { fontSize: 26, fontWeight: 800, color: "#eceef2", margin: "0 0 8px", lineHeight: 1.25 },
+        accent: { color: "#a99ff0" },
+        sub: { fontSize: 13.5, color: "#8a8d99", lineHeight: 1.6, margin: "0 0 22px" },
+        liveWrap: {
+          marginTop: 18,
+          padding: "12px 14px",
+          background: "#15161d",
+          border: "1px solid #23252f",
+          borderRadius: 10,
+        },
+        liveHead: {
+          display: "flex",
+          alignItems: "center",
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 10,
+          letterSpacing: 1.2,
+          color: "#28c840",
+          marginBottom: 10,
+        },
+        liveDot: {
+          width: 7,
+          height: 7,
+          borderRadius: "50%",
+          background: "#28c840",
+          display: "inline-block",
+          marginRight: 7,
+          animation: "livepulse 1.5s ease-in-out infinite",
+          boxShadow: "0 0 6px #28c840",
+        },
+        liveRow: { display: "flex", justifyContent: "space-between", gap: 6 },
+        liveCell: { display: "flex", flexDirection: "column", alignItems: "flex-start", flex: 1 },
+        liveVal: { fontSize: 14, fontWeight: 800, color: "#c9ccd6", fontFamily: "'Space Mono', monospace" },
+        liveKey: { marginTop: 2, fontSize: 9.5, color: "#6a6d79", fontFamily: "'Space Mono', monospace" },
+        liveErr: { fontSize: 11.5, color: "#6a6d79", fontFamily: "'Space Mono', monospace" },
+        liveCaveat: { marginTop: 9, fontSize: 10, color: "#7a7d89", fontFamily: "'Sora', sans-serif" },
+        liveSrc: { marginTop: 4, fontSize: 9.5, color: "#4d505c", fontFamily: "'Space Mono', monospace" },
+        label: {
+          display: "block",
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 11,
+          letterSpacing: 1.2,
+          color: "#6a6d79",
+          margin: "16px 0 8px",
+        },
+        input: {
+          width: "100%",
+          padding: "14px 16px",
+          fontSize: 20,
+          fontFamily: "'Space Mono', monospace",
+          color: "#eceef2",
+          background: "#15161d",
+          border: "1px solid #2a2c36",
+          borderRadius: 10,
+          outline: "none",
+        },
+        presetRow: { display: "flex", gap: 7 },
+        preset: {
+          flex: 1,
+          padding: "10px 6px",
+          background: "#15161d",
+          border: "1px solid #2a2c36",
+          borderRadius: 9,
+          cursor: "pointer",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 3,
+          transition: "all .15s",
+        },
+        presetActive: {
+          background: "#211f3a",
+          border: "1px solid #7c77dd",
+          boxShadow: "0 0 0 1px #7c77dd inset",
+        },
+        presetName: { fontSize: 14, fontWeight: 700, color: "#eceef2" },
+        presetSub: { fontSize: 10, color: "#7a7d89", fontFamily: "'Space Mono', monospace" },
+        tierRow: { display: "flex", gap: 7, flexWrap: "wrap" },
+        tier: {
+          flex: "1 1 auto",
+          minWidth: 88,
+          padding: "10px 6px",
+          background: "#15161d",
+          border: "1px solid #2a2c36",
+          borderRadius: 9,
+          cursor: "pointer",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 3,
+          transition: "all .15s",
+        },
+        tierActive: {
+          background: "#211f3a",
+          border: "1px solid #7c77dd",
+          boxShadow: "0 0 0 1px #7c77dd inset",
+        },
+        tierLabel: { fontSize: 15, fontWeight: 700, color: "#eceef2" },
+        tierTag: { fontSize: 9.5, color: "#7a7d89", fontFamily: "'Space Mono', monospace" },
+        range: { width: "100%", marginTop: 4 },
+        rangeHint: {
+          display: "flex",
+          justifyContent: "space-between",
+          fontSize: 10.5,
+          color: "#5a5d69",
+          fontFamily: "'Space Mono', monospace",
+          marginTop: 6,
+        },
+        shareNote: {
+          marginTop: 9,
+          fontSize: 11.5,
+          lineHeight: 1.55,
+          color: "#7a7d89",
+        },
+        card: {
+          position: "relative",
+          marginTop: 24,
+          padding: "22px 20px 16px",
+          background: "linear-gradient(160deg,#16172040,#1d1b2e)",
+          border: "1px solid #34315a",
+          borderRadius: 14,
+          overflow: "hidden",
+        },
+        cardGlow: {
+          position: "absolute",
+          top: -60,
+          right: -40,
+          width: 160,
+          height: 160,
+          background: "radial-gradient(circle,#7c77dd55,transparent 70%)",
+          animation: "glowpulse 4s ease-in-out infinite",
+          pointerEvents: "none",
+        },
+        cardTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+        cardKicker: {
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 11,
+          letterSpacing: 1.5,
+          color: "#a99ff0",
+        },
+        cardFdv: { fontFamily: "'Space Mono', monospace", fontSize: 11, color: "#7a7d89" },
+        bigNum: {
+          fontSize: 40,
+          fontWeight: 800,
+          color: "#fff",
+          margin: "10px 0 2px",
+          letterSpacing: -0.5,
+        },
+        dash: { color: "#6a6d79", fontWeight: 400 },
+        perPoint: {
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 12.5,
+          color: "#9396a2",
+          marginBottom: 16,
+        },
+        anchorBox: {
+          background: "#0f1016",
+          border: "1px solid #23252f",
+          borderRadius: 10,
+          padding: "12px 12px 8px",
+        },
+        anchorRow: { display: "flex", alignItems: "center", gap: 10, marginBottom: 9 },
+        anchorLabelV: { fontSize: 11, color: "#a99ff0", width: 86, fontWeight: 600 },
+        anchorLabelL: { fontSize: 11, color: "#8a8d99", width: 86 },
+        barTrack: { flex: 1, height: 8, background: "#1c1e27", borderRadius: 6, overflow: "hidden" },
+        barFill: { height: "100%", borderRadius: 6, transition: "width .4s ease" },
+        barVal: {
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 11,
+          color: "#c9ccd6",
+          width: 64,
+          textAlign: "right",
+        },
+        empty: { padding: "26px 0", textAlign: "center", color: "#6a6d79", fontSize: 14 },
+        cardFoot: {
+          marginTop: 14,
+          paddingTop: 10,
+          borderTop: "1px solid #23252f",
+          fontFamily: "'Space Mono', monospace",
+          fontSize: 10,
+          letterSpacing: 0.5,
+          color: "#5a5d69",
+          textAlign: "center",
+        },
+        note: {
+          marginTop: 18,
+          padding: "13px 15px",
+          background: "#15161d",
+          border: "1px solid #2a2c36",
+          borderRadius: 10,
+          fontSize: 13,
+          lineHeight: 1.6,
+          color: "#b4b7c2",
+        },
+        cta: { marginTop: 16, textAlign: "center" },
+        ctaText: { fontSize: 13.5, fontWeight: 600, color: "#eceef2" },
+        disc: {
+          marginTop: 16,
+          fontSize: 10.5,
+          lineHeight: 1.6,
+          color: "#5a5d69",
+          fontFamily: "'Space Mono', monospace",
+        },
+        refBtn: {
+          display: "block",
+          marginTop: 14,
+          padding: "14px 16px",
+          background: "linear-gradient(135deg,#7c77dd,#9d8bf0)",
+          borderRadius: 12,
+          textDecoration: "none",
+          textAlign: "center",
+          boxShadow: "0 8px 24px rgba(124,119,221,.35)",
+          cursor: "pointer",
+        },
+        refBtnText: { display: "block", fontSize: 15, fontWeight: 800, color: "#fff" },
+        refBtnSub: {
+          display: "block",
+          marginTop: 4,
+          fontSize: 11,
+          color: "#ece9ff",
+          fontFamily: "'Space Mono', monospace",
+        },
+        builtBy: {
+          marginTop: 16,
+          textAlign: "center",
+          fontSize: 12,
+          color: "#6a6d79",
+          fontFamily: "'Space Mono', monospace",
+        },
+        twLink: { color: "#a99ff0", textDecoration: "none", fontWeight: 700 },
+      };
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<VarEstimator />);
+    </script>
+  </body>
+</html>
